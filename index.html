@@ -268,27 +268,6 @@ dialog::backdrop{background:rgba(3,5,8,.82)}
 
 footer{border-top:1px solid var(--line);padding:26px 0 48px;color:var(--dim);font-size:13px}
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
-/* ---------- the wire ---------- */
-.mv{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line);padding:14px 16px;margin-bottom:10px}
-.mv.trade{border-left-color:var(--gold)}
-.mv.waiver{border-left-color:var(--ice)}
-.mv.free_agent{border-left-color:var(--dim)}
-.mv-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.mv-sides{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.mv-side{background:var(--panel-2);border:1px solid var(--line-2);padding:10px 12px}
-.mv-team{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;margin-bottom:8px}
-.mv-row{font-size:13.5px;padding:3px 0;display:flex;gap:7px;align-items:baseline}
-.mv-row .s{font-family:"IBM Plex Mono",monospace;font-size:12px;width:11px;flex:none}
-.mv-row.add .s{color:var(--turf)}
-.mv-row.drop .s{color:var(--ember)}
-.mv-row.drop{color:var(--text-2)}
-.mv-line{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:14px;align-items:start}
-.mv-none{color:var(--dim);font-size:13.5px}
-.mv-faab{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--gold)}
-.mv-pick{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--ice)}
-.mv-empty{background:var(--panel);border:1px solid var(--line);padding:26px;text-align:center;color:var(--dim);font-size:14px}
-@media(max-width:700px){.mv-sides{grid-template-columns:1fr}.mv-line{grid-template-columns:1fr}}
-
 </style>
 </head>
 <body>
@@ -314,16 +293,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
   <section class="pane on" id="p-hq">
     <div class="head"><div class="eyebrow">The Trophy Case</div><h2>Two seasons, two names on the cup</h2><p id="champNote"></p></div>
     <div class="banners" id="banners"></div>
-    <div class="sub-h"><span>On the wire</span><span class="dim">live from Sleeper</span></div>
-    <div id="hqMoves"></div>
     <div class="sub-h"><span>Storylines</span><span class="dim">from all 162 games</span></div>
     <div id="stories"></div>
-  </section>
-
-  <section class="pane" id="p-moves">
-    <div class="head"><div class="eyebrow">The Wire</div><h2>Every move, as it happens</h2><p>Trades, waiver claims and free-agent adds, pulled straight from Sleeper on every page load. Nothing here is typed by hand.</p></div>
-    <div class="filters" id="moveFilters"></div>
-    <div id="movesBody"></div>
   </section>
 
   <section class="pane" id="p-team">
@@ -375,7 +346,7 @@ const PLAYERS = {"11533":["Brandon Aubrey","K","DAL",3],"9487":["Parker Washingt
 const LEAGUE_2026 = "1389343119920599040";
 const OWNER = "1025527937254166528";           /* Jdubs3500 — default team */
 const API = "https://api.sleeper.app/v1";
-const CACHE_KEY = "pl_live_v2";
+const CACHE_KEY = "pl_live_v1";
 const CACHE_TTL = 30 * 60 * 1000;
 
 /* ---------- utils ---------- */
@@ -433,14 +404,11 @@ async function loadLive() {
     if (league.status !== "pre_draft" && league.status !== "drafting" && state.season === league.season) {
       try { matchups = await j(`${API}/league/${LEAGUE_2026}/matchups/${wk}`); } catch (e) { matchups = []; }
     }
-    let moves = [];
-    try { moves = await loadMoves(league); } catch (e) { console.error("[PL] loadMoves failed", e); moves = []; }
-    LIVE = { season: league.season, status: league.status, week: wk, nflWeek: state.week, users, rosters, matchups, moves };
+    LIVE = { season: league.season, status: league.status, week: wk, nflWeek: state.week, users, rosters, matchups };
     try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), data: LIVE })); } catch (e) {}
     setLive("live", "synced just now");
     applyLive();
   } catch (e) {
-    console.error("[PL] live sync failed", e);
     setLive("err", "offline — showing saved data");
   }
 }
@@ -475,154 +443,7 @@ function applyLive() {
   $("#heroEyebrow").textContent = `Sleeper Dynasty · Est. 2024 · ${label}`;
   $("#stamp").textContent = `History through the 2025 title · rosters live from Sleeper`;
   renderTeamStrip(); renderTeam(); renderFilm();
-  try { renderMoves(); } catch (e) { console.error("[PL] renderMoves failed", e); }
 }
-
-/* ---------- the wire: live transactions ---------- */
-const MV_LABEL = { trade: "Trade", waiver: "Waiver", free_agent: "Free agent", commissioner: "Commissioner" };
-const MV_PILL = { trade: "g", waiver: "t", free_agent: "", commissioner: "e" };
-let mvFilter = "all";
-
-async function fetchTx(lgId) {
-  const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
-  const res = await Promise.all(weeks.map(w => j(`${API}/league/${lgId}/transactions/${w}`).catch(() => [])));
-  return res.flat().filter(t => t && t.status === "complete");
-}
-
-async function loadMoves(league) {
-  const out = [];
-  async function pull(lgId, season) {
-    const [tx, rs] = await Promise.all([fetchTx(lgId), j(`${API}/league/${lgId}/rosters`).catch(() => [])]);
-    const own = {}; rs.forEach(r => { own[r.roster_id] = r.owner_id; });
-    tx.forEach(t => { t._season = season; t._own = own; out.push(t); });
-  }
-  await pull(league.league_id, league.season);
-  if (out.length < 12 && league.previous_league_id) {
-    try {
-      const prev = await j(`${API}/league/${league.previous_league_id}`);
-      await pull(prev.league_id, prev.season);
-    } catch (e) { /* no prior league — fine */ }
-  }
-  out.sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
-  const trades = out.filter(t => t.type === "trade");
-  const rest = out.filter(t => t.type !== "trade").slice(0, 150);
-  return trades.concat(rest).sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
-}
-
-let XPL = null, xplLoading = false;
-const XPL_KEY = "pl_players_v1", XPL_TTL = 24 * 60 * 60 * 1000;
-
-function loadXPL() {
-  if (XPL || xplLoading) return;
-  try {
-    const c = JSON.parse(localStorage.getItem(XPL_KEY) || "null");
-    if (c && c.map && Date.now() - c.at < XPL_TTL) { XPL = c.map; renderMoves(); return; }
-  } catch (e) { /* storage blocked */ }
-  xplLoading = true;
-  j(`${API}/players/nfl`).then(all => {
-    const map = {};
-    Object.keys(all).forEach(id => {
-      const p = all[id]; if (!p) return;
-      const nm = p.full_name || [p.first_name, p.last_name].filter(Boolean).join(" ") || p.last_name;
-      if (nm) map[id] = [nm, p.position || "", p.team || ""];
-    });
-    XPL = map;
-    try { localStorage.setItem(XPL_KEY, JSON.stringify({ at: Date.now(), map })); } catch (e) {}
-    renderMoves();
-  }).catch(e => console.error("[PL] player index failed", e)).finally(() => { xplLoading = false; });
-}
-
-const plInfo = pid => PLAYERS[pid] || (XPL && XPL[pid]) || null;
-const mvIds = t => Object.keys(t.adds || {}).concat(Object.keys(t.drops || {}));
-
-const mvTeam = (t, rid) => (t._own && t._own[rid]) ? teamOf(t._own[rid]) : "Roster " + rid;
-const mvAv = (t, rid) => (t._own && t._own[rid]) ? av(t._own[rid]) : "";
-
-function mvWhen(ms) {
-  if (!ms) return "";
-  const d = Math.floor((Date.now() - ms) / 86400000);
-  if (d < 1) return rel(ms);
-  if (d === 1) return "yesterday";
-  if (d < 30) return d + " days ago";
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-function mvPlayer(pid) {
-  const p = plInfo(pid);
-  if (!p) return `<span class="dim">unnamed player</span>`;
-  const pos = p[1] || "", tm = p[2] || "";
-  const posTag = pos ? `<span class="pos ${esc(pos)}">${esc(pos)}</span>` : "";
-  const tmTag = (tm && tm !== p[0]) ? ` <span class="dim">${esc(tm)}</span>` : "";
-  return `<span>${posTag}${esc(p[0])}${tmTag}</span>`;
-}
-
-function mvGot(t, rid) {
-  const rows = [];
-  Object.keys(t.adds || {}).forEach(pid => {
-    if (t.adds[pid] === rid) rows.push(`<div class="mv-row add"><span class="s">+</span>${mvPlayer(pid)}</div>`);
-  });
-  (t.draft_picks || []).forEach(p => {
-    if (p.owner_id === rid && p.previous_owner_id !== rid) {
-      rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-pick">${esc(p.season)} round ${esc(p.round)} pick</span></div>`);
-    }
-  });
-  (t.waiver_budget || []).forEach(b => {
-    if (b.receiver === rid) rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-faab">$${esc(b.amount)} FAAB</span></div>`);
-  });
-  Object.keys(t.drops || {}).forEach(pid => {
-    if (t.drops[pid] === rid) rows.push(`<div class="mv-row drop"><span class="s">−</span>${mvPlayer(pid)}</div>`);
-  });
-  return rows.length ? rows.join("") : `<div class="mv-none">nothing</div>`;
-}
-
-function mvCard(t) {
-  try { return mvCardInner(t); } catch (e) { console.error("[PL] bad move", e, t); return ""; }
-}
-function mvCardInner(t) {
-  const when = t.status_updated || t.created || 0;
-  const head = `<div class="mv-h"><span class="pill ${MV_PILL[t.type] || ""}">${esc(MV_LABEL[t.type] || t.type)}</span><span>${esc(mvWhen(when))}${t._season ? " · " + esc(t._season) : ""}</span></div>`;
-  if (t.type === "trade") {
-    const sides = (t.roster_ids || []).map(rid =>
-      `<div class="mv-side"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span></div>${mvGot(t, rid)}</div>`).join("");
-    return `<div class="mv trade">${head}<div class="mv-sides">${sides}</div></div>`;
-  }
-  const rid = (t.roster_ids || [])[0];
-  const bid = t.settings && t.settings.waiver_bid;
-  return `<div class="mv ${esc(t.type)}">${head}<div class="mv-line"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span>${bid ? `<span class="mv-faab">$${esc(bid)}</span>` : ""}</div><div>${mvGot(t, rid)}</div></div></div>`;
-}
-
-function renderMoves() {
-  const all = (LIVE && LIVE.moves) || [];
-  const counts = { all: all.length, trade: 0, waiver: 0, free_agent: 0 };
-  all.forEach(t => { if (counts[t.type] != null) counts[t.type]++; });
-  const fEl = $("#moveFilters");
-  if (fEl) {
-    fEl.innerHTML = [["all", "All"], ["trade", "Trades"], ["waiver", "Waivers"], ["free_agent", "Free agents"]]
-      .map(([k, l]) => `<button class="chip${mvFilter === k ? " on" : ""}" data-mv="${k}">${l} ${counts[k] || 0}</button>`).join("");
-  }
-  if (!XPL && all.some(t => mvIds(t).some(pid => !PLAYERS[pid]))) setTimeout(loadXPL, 1200);
-  const list = mvFilter === "all" ? all : all.filter(t => t.type === mvFilter);
-  const body = $("#movesBody");
-  if (body) {
-    body.innerHTML = list.length
-      ? list.map(mvCard).join("")
-      : `<div class="mv-empty">${all.length ? "Nothing under that filter yet." : "No moves on the wire yet. This fills in by itself the moment someone in the league trades, claims or drops."}</div>`;
-  }
-  const hq = $("#hqMoves");
-  if (hq) {
-    hq.innerHTML = all.length
-      ? all.slice(0, 4).map(mvCard).join("")
-      : `<div class="mv-empty">Quiet so far — no trades or waiver moves on record.</div>`;
-  }
-}
-
-if ($("#moveFilters")) {
-  $("#moveFilters").addEventListener("click", e => {
-    const b = e.target.closest("[data-mv]"); if (!b) return;
-    mvFilter = b.dataset.mv; renderMoves();
-  });
-}
-renderMoves();
 
 /* ---------- hero ---------- */
 const totalGames = DATA.season_detail.reduce((a, s) => a + s.games.length, 0);
@@ -635,7 +456,7 @@ $("#kpis").innerHTML = [
 $("#stamp").textContent = "History through the 2025 title";
 
 /* ---------- tabs ---------- */
-const PANES = [["hq","HQ"],["moves","Moves"],["team","Team Room"],["film","Film Room"],["hist","History"],["rec","Record Book"],["seas","Seasons"]];
+const PANES = [["hq","HQ"],["team","Team Room"],["film","Film Room"],["hist","History"],["rec","Record Book"],["seas","Seasons"]];
 $("#tabs").innerHTML = PANES.map(([k, l], i) => `<button data-p="${k}"${i ? "" : ' class="on"'}>${l}</button>`).join("");
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("[data-p]"); if (!b) return;
