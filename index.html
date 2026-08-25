@@ -67,120 +67,6 @@ button{font:inherit;color:inherit}
 .dot.err{background:var(--ember)}
 @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(63,197,133,0)}100%{box-shadow:0 0 0 0 rgba(63,197,133,0)}}
 
-/* ---------- the wire: live transactions ---------- */
-const MV_LABEL = { trade: "Trade", waiver: "Waiver", free_agent: "Free agent", commissioner: "Commissioner" };
-const MV_PILL = { trade: "g", waiver: "t", free_agent: "", commissioner: "e" };
-let mvFilter = "all";
-
-async function fetchTx(lgId) {
-  const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
-  const res = await Promise.all(weeks.map(w => j(`${API}/league/${lgId}/transactions/${w}`).catch(() => [])));
-  return res.flat().filter(t => t && t.status === "complete");
-}
-
-async function loadMoves(league) {
-  const out = [];
-  async function pull(lgId, season) {
-    const [tx, rs] = await Promise.all([fetchTx(lgId), j(`${API}/league/${lgId}/rosters`).catch(() => [])]);
-    const own = {}; rs.forEach(r => { own[r.roster_id] = r.owner_id; });
-    tx.forEach(t => { t._season = season; t._own = own; out.push(t); });
-  }
-  await pull(league.league_id, league.season);
-  if (out.length < 12 && league.previous_league_id) {
-    try {
-      const prev = await j(`${API}/league/${league.previous_league_id}`);
-      await pull(prev.league_id, prev.season);
-    } catch (e) { /* no prior league — fine */ }
-  }
-  out.sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
-  return out.slice(0, 120);
-}
-
-const mvTeam = (t, rid) => (t._own && t._own[rid]) ? teamOf(t._own[rid]) : "Roster " + rid;
-const mvAv = (t, rid) => (t._own && t._own[rid]) ? av(t._own[rid]) : "";
-
-function mvWhen(ms) {
-  if (!ms) return "";
-  const d = Math.floor((Date.now() - ms) / 86400000);
-  if (d < 1) return rel(ms);
-  if (d === 1) return "yesterday";
-  if (d < 30) return d + " days ago";
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-function mvPlayer(pid) {
-  const p = PLAYERS[pid];
-  if (!p) return `<span>Player ${esc(String(pid))}</span>`;
-  return `<span><span class="pos ${esc(p[1])}">${esc(p[1])}</span>${esc(p[0])} <span class="dim">${esc(p[2] || "FA")}</span></span>`;
-}
-
-function mvGot(t, rid) {
-  const rows = [];
-  Object.keys(t.adds || {}).forEach(pid => {
-    if (t.adds[pid] === rid) rows.push(`<div class="mv-row add"><span class="s">+</span>${mvPlayer(pid)}</div>`);
-  });
-  (t.draft_picks || []).forEach(p => {
-    if (p.owner_id === rid && p.previous_owner_id !== rid) {
-      rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-pick">${esc(p.season)} round ${esc(p.round)} pick</span></div>`);
-    }
-  });
-  (t.waiver_budget || []).forEach(b => {
-    if (b.receiver === rid) rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-faab">$${esc(b.amount)} FAAB</span></div>`);
-  });
-  Object.keys(t.drops || {}).forEach(pid => {
-    if (t.drops[pid] === rid) rows.push(`<div class="mv-row drop"><span class="s">−</span>${mvPlayer(pid)}</div>`);
-  });
-  return rows.length ? rows.join("") : `<div class="mv-none">nothing</div>`;
-}
-
-function mvCard(t) {
-  try { return mvCardInner(t); } catch (e) { console.error("[PL] bad move", e, t); return ""; }
-}
-function mvCardInner(t) {
-  const when = t.status_updated || t.created || 0;
-  const head = `<div class="mv-h"><span class="pill ${MV_PILL[t.type] || ""}">${esc(MV_LABEL[t.type] || t.type)}</span><span>${esc(mvWhen(when))}${t._season ? " · " + esc(t._season) : ""}</span></div>`;
-  if (t.type === "trade") {
-    const sides = (t.roster_ids || []).map(rid =>
-      `<div class="mv-side"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span></div>${mvGot(t, rid)}</div>`).join("");
-    return `<div class="mv trade">${head}<div class="mv-sides">${sides}</div></div>`;
-  }
-  const rid = (t.roster_ids || [])[0];
-  const bid = t.settings && t.settings.waiver_bid;
-  return `<div class="mv ${esc(t.type)}">${head}<div class="mv-line"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span>${bid ? `<span class="mv-faab">$${esc(bid)}</span>` : ""}</div><div>${mvGot(t, rid)}</div></div></div>`;
-}
-
-function renderMoves() {
-  const all = (LIVE && LIVE.moves) || [];
-  const counts = { all: all.length, trade: 0, waiver: 0, free_agent: 0 };
-  all.forEach(t => { if (counts[t.type] != null) counts[t.type]++; });
-  const fEl = $("#moveFilters");
-  if (fEl) {
-    fEl.innerHTML = [["all", "All"], ["trade", "Trades"], ["waiver", "Waivers"], ["free_agent", "Free agents"]]
-      .map(([k, l]) => `<button class="chip${mvFilter === k ? " on" : ""}" data-mv="${k}">${l} ${counts[k] || 0}</button>`).join("");
-  }
-  const list = mvFilter === "all" ? all : all.filter(t => t.type === mvFilter);
-  const body = $("#movesBody");
-  if (body) {
-    body.innerHTML = list.length
-      ? list.map(mvCard).join("")
-      : `<div class="mv-empty">${all.length ? "Nothing under that filter yet." : "No moves on the wire yet. This fills in by itself the moment someone in the league trades, claims or drops."}</div>`;
-  }
-  const hq = $("#hqMoves");
-  if (hq) {
-    hq.innerHTML = all.length
-      ? all.slice(0, 4).map(mvCard).join("")
-      : `<div class="mv-empty">Quiet so far — no trades or waiver moves on record.</div>`;
-  }
-}
-
-if ($("#moveFilters")) {
-  $("#moveFilters").addEventListener("click", e => {
-    const b = e.target.closest("[data-mv]"); if (!b) return;
-    mvFilter = b.dataset.mv; renderMoves();
-  });
-}
-renderMoves();
-
 /* ---------- hero ---------- */
 .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
 .hero:before{
@@ -591,6 +477,120 @@ function applyLive() {
   renderTeamStrip(); renderTeam(); renderFilm();
   try { renderMoves(); } catch (e) { console.error("[PL] renderMoves failed", e); }
 }
+
+/* ---------- the wire: live transactions ---------- */
+const MV_LABEL = { trade: "Trade", waiver: "Waiver", free_agent: "Free agent", commissioner: "Commissioner" };
+const MV_PILL = { trade: "g", waiver: "t", free_agent: "", commissioner: "e" };
+let mvFilter = "all";
+
+async function fetchTx(lgId) {
+  const weeks = Array.from({ length: 18 }, (_, i) => i + 1);
+  const res = await Promise.all(weeks.map(w => j(`${API}/league/${lgId}/transactions/${w}`).catch(() => [])));
+  return res.flat().filter(t => t && t.status === "complete");
+}
+
+async function loadMoves(league) {
+  const out = [];
+  async function pull(lgId, season) {
+    const [tx, rs] = await Promise.all([fetchTx(lgId), j(`${API}/league/${lgId}/rosters`).catch(() => [])]);
+    const own = {}; rs.forEach(r => { own[r.roster_id] = r.owner_id; });
+    tx.forEach(t => { t._season = season; t._own = own; out.push(t); });
+  }
+  await pull(league.league_id, league.season);
+  if (out.length < 12 && league.previous_league_id) {
+    try {
+      const prev = await j(`${API}/league/${league.previous_league_id}`);
+      await pull(prev.league_id, prev.season);
+    } catch (e) { /* no prior league — fine */ }
+  }
+  out.sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
+  return out.slice(0, 120);
+}
+
+const mvTeam = (t, rid) => (t._own && t._own[rid]) ? teamOf(t._own[rid]) : "Roster " + rid;
+const mvAv = (t, rid) => (t._own && t._own[rid]) ? av(t._own[rid]) : "";
+
+function mvWhen(ms) {
+  if (!ms) return "";
+  const d = Math.floor((Date.now() - ms) / 86400000);
+  if (d < 1) return rel(ms);
+  if (d === 1) return "yesterday";
+  if (d < 30) return d + " days ago";
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function mvPlayer(pid) {
+  const p = PLAYERS[pid];
+  if (!p) return `<span>Player ${esc(String(pid))}</span>`;
+  return `<span><span class="pos ${esc(p[1])}">${esc(p[1])}</span>${esc(p[0])} <span class="dim">${esc(p[2] || "FA")}</span></span>`;
+}
+
+function mvGot(t, rid) {
+  const rows = [];
+  Object.keys(t.adds || {}).forEach(pid => {
+    if (t.adds[pid] === rid) rows.push(`<div class="mv-row add"><span class="s">+</span>${mvPlayer(pid)}</div>`);
+  });
+  (t.draft_picks || []).forEach(p => {
+    if (p.owner_id === rid && p.previous_owner_id !== rid) {
+      rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-pick">${esc(p.season)} round ${esc(p.round)} pick</span></div>`);
+    }
+  });
+  (t.waiver_budget || []).forEach(b => {
+    if (b.receiver === rid) rows.push(`<div class="mv-row add"><span class="s">+</span><span class="mv-faab">$${esc(b.amount)} FAAB</span></div>`);
+  });
+  Object.keys(t.drops || {}).forEach(pid => {
+    if (t.drops[pid] === rid) rows.push(`<div class="mv-row drop"><span class="s">−</span>${mvPlayer(pid)}</div>`);
+  });
+  return rows.length ? rows.join("") : `<div class="mv-none">nothing</div>`;
+}
+
+function mvCard(t) {
+  try { return mvCardInner(t); } catch (e) { console.error("[PL] bad move", e, t); return ""; }
+}
+function mvCardInner(t) {
+  const when = t.status_updated || t.created || 0;
+  const head = `<div class="mv-h"><span class="pill ${MV_PILL[t.type] || ""}">${esc(MV_LABEL[t.type] || t.type)}</span><span>${esc(mvWhen(when))}${t._season ? " · " + esc(t._season) : ""}</span></div>`;
+  if (t.type === "trade") {
+    const sides = (t.roster_ids || []).map(rid =>
+      `<div class="mv-side"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span></div>${mvGot(t, rid)}</div>`).join("");
+    return `<div class="mv trade">${head}<div class="mv-sides">${sides}</div></div>`;
+  }
+  const rid = (t.roster_ids || [])[0];
+  const bid = t.settings && t.settings.waiver_bid;
+  return `<div class="mv ${esc(t.type)}">${head}<div class="mv-line"><div class="mv-team">${mvAv(t, rid)}<span>${esc(mvTeam(t, rid))}</span>${bid ? `<span class="mv-faab">$${esc(bid)}</span>` : ""}</div><div>${mvGot(t, rid)}</div></div></div>`;
+}
+
+function renderMoves() {
+  const all = (LIVE && LIVE.moves) || [];
+  const counts = { all: all.length, trade: 0, waiver: 0, free_agent: 0 };
+  all.forEach(t => { if (counts[t.type] != null) counts[t.type]++; });
+  const fEl = $("#moveFilters");
+  if (fEl) {
+    fEl.innerHTML = [["all", "All"], ["trade", "Trades"], ["waiver", "Waivers"], ["free_agent", "Free agents"]]
+      .map(([k, l]) => `<button class="chip${mvFilter === k ? " on" : ""}" data-mv="${k}">${l} ${counts[k] || 0}</button>`).join("");
+  }
+  const list = mvFilter === "all" ? all : all.filter(t => t.type === mvFilter);
+  const body = $("#movesBody");
+  if (body) {
+    body.innerHTML = list.length
+      ? list.map(mvCard).join("")
+      : `<div class="mv-empty">${all.length ? "Nothing under that filter yet." : "No moves on the wire yet. This fills in by itself the moment someone in the league trades, claims or drops."}</div>`;
+  }
+  const hq = $("#hqMoves");
+  if (hq) {
+    hq.innerHTML = all.length
+      ? all.slice(0, 4).map(mvCard).join("")
+      : `<div class="mv-empty">Quiet so far — no trades or waiver moves on record.</div>`;
+  }
+}
+
+if ($("#moveFilters")) {
+  $("#moveFilters").addEventListener("click", e => {
+    const b = e.target.closest("[data-mv]"); if (!b) return;
+    mvFilter = b.dataset.mv; renderMoves();
+  });
+}
+renderMoves();
 
 /* ---------- hero ---------- */
 const totalGames = DATA.season_detail.reduce((a, s) => a + s.games.length, 0);
