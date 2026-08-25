@@ -134,6 +134,9 @@ function mvGot(t, rid) {
 }
 
 function mvCard(t) {
+  try { return mvCardInner(t); } catch (e) { console.error("[PL] bad move", e, t); return ""; }
+}
+function mvCardInner(t) {
   const when = t.status_updated || t.created || 0;
   const head = `<div class="mv-h"><span class="pill ${MV_PILL[t.type] || ""}">${esc(MV_LABEL[t.type] || t.type)}</span><span>${esc(mvWhen(when))}${t._season ? " · " + esc(t._season) : ""}</span></div>`;
   if (t.type === "trade") {
@@ -545,12 +548,13 @@ async function loadLive() {
       try { matchups = await j(`${API}/league/${LEAGUE_2026}/matchups/${wk}`); } catch (e) { matchups = []; }
     }
     let moves = [];
-    try { moves = await loadMoves(league); } catch (e) { moves = []; }
+    try { moves = await loadMoves(league); } catch (e) { console.error("[PL] loadMoves failed", e); moves = []; }
     LIVE = { season: league.season, status: league.status, week: wk, nflWeek: state.week, users, rosters, matchups, moves };
     try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), data: LIVE })); } catch (e) {}
     setLive("live", "synced just now");
     applyLive();
   } catch (e) {
+    console.error("[PL] live sync failed", e);
     setLive("err", "offline — showing saved data");
   }
 }
@@ -584,7 +588,8 @@ function applyLive() {
     : `${LIVE.season} season · week ${LIVE.week}`;
   $("#heroEyebrow").textContent = `Sleeper Dynasty · Est. 2024 · ${label}`;
   $("#stamp").textContent = `History through the 2025 title · rosters live from Sleeper`;
-  renderTeamStrip(); renderTeam(); renderFilm(); renderMoves();
+  renderTeamStrip(); renderTeam(); renderFilm();
+  try { renderMoves(); } catch (e) { console.error("[PL] renderMoves failed", e); }
 }
 
 /* ---------- hero ---------- */
