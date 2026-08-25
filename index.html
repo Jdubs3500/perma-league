@@ -504,8 +504,36 @@ async function loadMoves(league) {
     } catch (e) { /* no prior league — fine */ }
   }
   out.sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
-  return out.slice(0, 120);
+  const trades = out.filter(t => t.type === "trade");
+  const rest = out.filter(t => t.type !== "trade").slice(0, 150);
+  return trades.concat(rest).sort((a, b) => (b.status_updated || b.created || 0) - (a.status_updated || a.created || 0));
 }
+
+let XPL = null, xplLoading = false;
+const XPL_KEY = "pl_players_v1", XPL_TTL = 24 * 60 * 60 * 1000;
+
+function loadXPL() {
+  if (XPL || xplLoading) return;
+  try {
+    const c = JSON.parse(localStorage.getItem(XPL_KEY) || "null");
+    if (c && c.map && Date.now() - c.at < XPL_TTL) { XPL = c.map; renderMoves(); return; }
+  } catch (e) { /* storage blocked */ }
+  xplLoading = true;
+  j(`${API}/players/nfl`).then(all => {
+    const map = {};
+    Object.keys(all).forEach(id => {
+      const p = all[id]; if (!p) return;
+      const nm = p.full_name || [p.first_name, p.last_name].filter(Boolean).join(" ") || p.last_name;
+      if (nm) map[id] = [nm, p.position || "", p.team || ""];
+    });
+    XPL = map;
+    try { localStorage.setItem(XPL_KEY, JSON.stringify({ at: Date.now(), map })); } catch (e) {}
+    renderMoves();
+  }).catch(e => console.error("[PL] player index failed", e)).finally(() => { xplLoading = false; });
+}
+
+const plInfo = pid => PLAYERS[pid] || (XPL && XPL[pid]) || null;
+const mvIds = t => Object.keys(t.adds || {}).concat(Object.keys(t.drops || {}));
 
 const mvTeam = (t, rid) => (t._own && t._own[rid]) ? teamOf(t._own[rid]) : "Roster " + rid;
 const mvAv = (t, rid) => (t._own && t._own[rid]) ? av(t._own[rid]) : "";
@@ -520,9 +548,12 @@ function mvWhen(ms) {
 }
 
 function mvPlayer(pid) {
-  const p = PLAYERS[pid];
-  if (!p) return `<span>Player ${esc(String(pid))}</span>`;
-  return `<span><span class="pos ${esc(p[1])}">${esc(p[1])}</span>${esc(p[0])} <span class="dim">${esc(p[2] || "FA")}</span></span>`;
+  const p = plInfo(pid);
+  if (!p) return `<span class="dim">unnamed player</span>`;
+  const pos = p[1] || "", tm = p[2] || "";
+  const posTag = pos ? `<span class="pos ${esc(pos)}">${esc(pos)}</span>` : "";
+  const tmTag = (tm && tm !== p[0]) ? ` <span class="dim">${esc(tm)}</span>` : "";
+  return `<span>${posTag}${esc(p[0])}${tmTag}</span>`;
 }
 
 function mvGot(t, rid) {
@@ -569,6 +600,7 @@ function renderMoves() {
     fEl.innerHTML = [["all", "All"], ["trade", "Trades"], ["waiver", "Waivers"], ["free_agent", "Free agents"]]
       .map(([k, l]) => `<button class="chip${mvFilter === k ? " on" : ""}" data-mv="${k}">${l} ${counts[k] || 0}</button>`).join("");
   }
+  if (!XPL && all.some(t => mvIds(t).some(pid => !PLAYERS[pid]))) setTimeout(loadXPL, 1200);
   const list = mvFilter === "all" ? all : all.filter(t => t.type === mvFilter);
   const body = $("#movesBody");
   if (body) {
